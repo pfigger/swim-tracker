@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Schwimm-Tracker</title>
+<style>
+:root{--bg:#f2f7fa;--card:#fff;--text:#12303d;--muted:#5d7783;--accent:#0b7fa8;--accent-text:#fff;--line:#d5e3ea;--danger:#b3261e;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1b22;--card:#142730;--text:#e4f1f6;--muted:#8fa9b5;--accent:#3cb4de;--accent-text:#06222d;--line:#244150;--danger:#ff8a80;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:8px 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:10px}
+label{display:block;font-size:.85rem;color:var(--muted);flex:1}
+input,textarea{width:100%;font:inherit;padding:10px;margin-top:4px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text)}
+.big{font-size:1.2rem}
+textarea{font-family:ui-monospace,Menlo,monospace;font-size:.8rem;min-height:130px}
+#save{width:100%;padding:20px;font:inherit;font-size:1.3rem;font-weight:700;border:0;border-radius:14px;background:var(--accent);color:var(--accent-text);cursor:pointer}
+#save:disabled{opacity:.6}
+#status{min-height:1.4em;margin:8px 2px 14px;font-size:.9rem;color:var(--muted);white-space:pre-wrap}
+.entry{border-top:1px solid var(--line);padding:10px 0;display:flex;justify-content:space-between;gap:10px}
+.entry:first-child{border-top:0}
+.t{font-weight:600}.m{font-size:.85rem;color:var(--muted)}.m a{color:var(--accent)}
+.del{background:none;border:0;color:var(--danger);font-size:.85rem;cursor:pointer;align-self:flex-start}
+.tools{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px}
+button.s{background:none;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 10px;font:inherit;font-size:.85rem;cursor:pointer}
+details summary{cursor:pointer;font-weight:600}
+pre{white-space:pre-wrap;word-break:break-all;font-size:.75rem;color:var(--muted);max-height:200px;overflow:auto}
+.hint{font-size:.8rem;color:var(--muted);margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+<h1>🏊 Schwimm-Tracker</h1>
+
+<div class="card">
+  <div class="row">
+    <label>Wasser Seedorf (°C)<input class="big" id="water" type="number" inputmode="decimal" step="0.1" placeholder="automatisch"></label>
+    <label>Luft Seedorf (°C)<input class="big" id="air" type="number" inputmode="decimal" step="0.1" placeholder="automatisch"></label>
+  </div>
+  <p class="hint">Werte werden beim Speichern von Akenza geholt. Schlägt der Abruf fehl, gelten die hier eingetragenen Werte.</p>
+</div>
+
+<button id="save">Jetzt speichern</button>
+<div id="status" role="status"></div>
+
+<div class="card">
+  <div class="tools"><strong id="count">Einträge</strong><button class="s" id="csv">CSV exportieren</button></div>
+  <div id="list"></div>
+</div>
+
+<div class="card">
+  <details id="cfgbox">
+    <summary>Einstellungen Akenza</summary>
+    <label style="margin-top:10px">API-URL<input id="cfg-url" autocapitalize="off" autocorrect="off"></label>
+    <label style="margin-top:8px">API-Key (nur lesend!)<input id="cfg-key" type="password" autocomplete="off"></label>
+    <label style="margin-top:8px">Device-ID<input id="cfg-dev" autocapitalize="off"></label>
+    <div class="row" style="margin-top:8px">
+      <label>Wasser-Datenschlüssel<input id="cfg-kw"></label>
+      <label>Luft-Datenschlüssel<input id="cfg-ka"></label>
+    </div>
+    <label style="margin-top:8px">Abfrage-Body (JSON, Platzhalter {{start}} und {{end}})<textarea id="cfg-body" spellcheck="false"></textarea></label>
+    <div class="tools" style="margin-top:10px">
+      <button class="s" id="cfg-save">Einstellungen speichern</button>
+      <button class="s" id="cfg-test">Abruf testen</button>
+    </div>
+    <pre id="debug"></pre>
+  </details>
+</div>
+</main>
+<script>
+(function(){
+var KEY="schwimm-tracker:entries", TKEY="schwimm-tracker:temps", CKEY="schwimm-tracker:config";
+var DEFAULTS={
+  url:"https://api.akenza.io/v3/devices/0018B21000007F80/query",
+  key:"",
+  dev:"0018B21000007F80",
+  kw:"temperature2",
+  ka:"temperature1",
+  body:'{\n  "topic": "default",\n  "timestamp": {\n    "start": "{{start}}",\n    "end": "{{end}}"\n  },\n  "page": 1,\n  "limit": 5,\n  "sort": "desc"\n}'
+};
+var entries=[],cfg=Object.assign({},DEFAULTS);
+var $=function(id){return document.getElementById(id)};
+function load(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
+function store(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+var fmt=new Intl.DateTimeFormat("de-CH",{dateStyle:"medium",timeStyle:"medium"});
+function num(v){var n=parseFloat(String(v).replace(",","."));return isNaN(n)?null:n}
+function deg(n){return n==null?"–":n.toFixed(1).replace(".",",")+" °C"}
+
+/* ---------- Akenza ---------- */
+function findLatest(node,key){
+  var best=null,bestT=-Infinity;
+  (function walk(o){
+    if(Array.isArray(o)){o.forEach(walk);return}
+    if(o&&typeof o==="object"){
+      if(typeof o[key]==="number"||(typeof o[key]==="string"&&!isNaN(parseFloat(o[key])))){
+        var ts=Date.parse(o.timestamp||o.ts||o.time||"");var t=isNaN(ts)?-1:ts;
+        if(best===null||t>bestT){best=parseFloat(o[key]);bestT=t}
+      }
+      Object.keys(o).forEach(function(k){walk(o[k])});
+    }
+  })(node);
+  return best;
+}
+async function fetchTemps(){
+  if(!cfg.key&&cfg.url.indexOf("api.akenza.io")>-1)throw new Error("Kein API-Key in den Einstellungen.");
+  var end=new Date(),start=new Date(end.getTime()-23*3600*1000);
+  var body=cfg.body.split("{{start}}").join(start.toISOString()).split("{{end}}").join(end.toISOString());
+  var r=await Promise.race([
+    fetch(cfg.url,{method:"POST",headers:cfg.key?{"Content-Type":"application/json","x-api-key":cfg.key}:{"Content-Type":"application/json"},body:body}),
+    new Promise(function(_,rej){setTimeout(function(){rej(new Error("Zeitüberschreitung (12 s)"))},12000)})
+  ]);
+  var text=await r.text();
+  $("debug").textContent="HTTP "+r.status+"\n"+text.slice(0,2000);
+  if(!r.ok)throw new Error("Akenza HTTP "+r.status+": "+text.slice(0,200));
+  var j=JSON.parse(text);
+  var w=findLatest(j,cfg.kw),a=findLatest(j,cfg.ka);
+  if(w==null&&a==null)throw new Error("Keine Werte für "+cfg.kw+"/"+cfg.ka+" in der Antwort gefunden.");
+  return {water:w,air:a};
+}
+
+/* ---------- Standort ---------- */
+function getPos(){
+  return new Promise(function(res){
+    if(!navigator.geolocation)return res({err:"Standort wird nicht unterstützt."});
+    navigator.geolocation.getCurrentPosition(function(p){res({lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy})},
+      function(e){res({err:e.code===1?"Standortzugriff verweigert.":"Standort nicht ermittelbar."})},
+      {enableHighAccuracy:true,timeout:15000,maximumAge:0});
+  });
+}
+
+/* ---------- UI ---------- */
+function render(){
+  var l=$("list");l.textContent="";
+  $("count").textContent="Einträge ("+entries.length+")";
+  if(!entries.length){var p=document.createElement("div");p.className="m";p.textContent="Noch nichts gespeichert.";l.appendChild(p);return}
+  entries.forEach(function(e){
+    var row=document.createElement("div");row.className="entry";
+    var left=document.createElement("div");
+    var t=document.createElement("div");t.className="t";t.textContent=fmt.format(new Date(e.ts));
+    var m=document.createElement("div");m.className="m";
+    m.textContent="Wasser "+deg(e.water)+" · Luft "+deg(e.air)+(e.src==="manual"?" (manuell)":"");
+    var loc=document.createElement("div");loc.className="m";
+    if(e.lat!=null){
+      var a=document.createElement("a");a.target="_blank";a.rel="noopener";
+      a.href="https://www.openstreetmap.org/?mlat="+e.lat+"&mlon="+e.lon+"#map=17/"+e.lat+"/"+e.lon;
+      a.textContent=e.lat.toFixed(5)+", "+e.lon.toFixed(5);loc.appendChild(a);
+      if(e.acc!=null)loc.appendChild(document.createTextNode(" (±"+Math.round(e.acc)+" m)"));
+    }else loc.textContent="Standort nicht verfügbar";
+    left.appendChild(t);left.appendChild(m);left.appendChild(loc);
+    var d=document.createElement("button");d.className="del";d.textContent="Löschen";
+    d.onclick=function(){if(confirm("Eintrag löschen?")){entries=entries.filter(function(x){return x.id!==e.id});store(KEY,entries);render()}};
+    row.appendChild(left);row.appendChild(d);l.appendChild(row);
+  });
+}
+
+$("save").onclick=async function(){
+  var b=$("save"),s=$("status");b.disabled=true;s.textContent="Standort und Temperaturen werden geholt …";
+  var ts=new Date().toISOString(),notes=[],src="akenza";
+  var results=await Promise.all([getPos(),fetchTemps().then(function(v){return {v:v}},function(e){return {err:e}})]);
+  var pos=results[0],tr=results[1],water,air;
+  if(tr.v){
+    water=tr.v.water!=null?tr.v.water:num($("water").value);
+    air=tr.v.air!=null?tr.v.air:num($("air").value);
+    $("water").value=water==null?"":water;$("air").value=air==null?"":air;
+  }else{
+    water=num($("water").value);air=num($("air").value);src="manual";
+    notes.push("Akenza-Abruf fehlgeschlagen ("+(tr.err&&tr.err.message||"unbekannt")+"). Manuelle Werte verwendet.");
+  }
+  if(pos.err)notes.push(pos.err);
+  store(TKEY,{water:$("water").value,air:$("air").value});
+  entries.unshift({id:Date.now()+"",ts:ts,lat:pos.lat==null?null:pos.lat,lon:pos.lon==null?null:pos.lon,acc:pos.acc==null?null:pos.acc,water:water,air:air,src:src});
+  var ok=store(KEY,entries);
+  s.textContent=(ok?"Gespeichert.":"Speichern im Browser fehlgeschlagen.")+(notes.length?"\n"+notes.join("\n"):"");
+  b.disabled=false;render();
+};
+
+$("csv").onclick=async function(){
+  var rows=["Zeit;Breite;Länge;Genauigkeit_m;Wasser_C;Luft_C;Quelle"].concat(entries.map(function(e){
+    return [e.ts,e.lat==null?"":e.lat,e.lon==null?"":e.lon,e.acc==null?"":Math.round(e.acc),e.water==null?"":e.water,e.air==null?"":e.air,e.src||""].join(";")}));
+  var csv=rows.join("\n");
+  try{
+    var u=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}));
+    var a=document.createElement("a");a.href=u;a.download="schwimm-tracker.csv";document.body.appendChild(a);a.click();a.remove();
+    setTimeout(function(){URL.revokeObjectURL(u)},2000);
+  }catch(e){try{await navigator.clipboard.writeText(csv);$("status").textContent="CSV in die Zwischenablage kopiert."}catch(e2){$("status").textContent="Export nicht möglich."}}
+};
+
+function fillCfg(){$("cfg-url").value=cfg.url;$("cfg-key").value=cfg.key;$("cfg-dev").value=cfg.dev;$("cfg-kw").value=cfg.kw;$("cfg-ka").value=cfg.ka;$("cfg-body").value=cfg.body}
+function readCfg(){
+  cfg.dev=$("cfg-dev").value.trim();cfg.key=$("cfg-key").value.trim();
+  cfg.url=$("cfg-url").value.trim();cfg.kw=$("cfg-kw").value.trim();cfg.ka=$("cfg-ka").value.trim();cfg.body=$("cfg-body").value;
+}
+$("cfg-dev").addEventListener("change",function(){var d=$("cfg-dev").value.trim();$("cfg-url").value="https://api.akenza.io/v3/devices/"+d+"/query"});
+$("cfg-save").onclick=function(){readCfg();$("status").textContent=store(CKEY,cfg)?"Einstellungen gespeichert.":"Einstellungen konnten nicht gespeichert werden."};
+$("cfg-test").onclick=async function(){
+  readCfg();$("debug").textContent="Abruf läuft …";
+  try{var v=await fetchTemps();$("status").textContent="Test OK: Wasser "+deg(v.water)+", Luft "+deg(v.air)}
+  catch(e){$("status").textContent="Test fehlgeschlagen: "+e.message}
+};
+
+var saved=load(CKEY,null);if(saved)cfg=Object.assign(cfg,saved);
+fillCfg();
+entries=load(KEY,[]);
+var t=load(TKEY,null);if(t){$("water").value=t.water||"";$("air").value=t.air||""}
+if(!cfg.key||!saved)$("cfgbox").open=true;
+render();
+})();
+</script>
+</body>
+</html>
